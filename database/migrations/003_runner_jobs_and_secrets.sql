@@ -1,4 +1,7 @@
 -- Server-managed records. Do not add browser-user policies to these tables.
+-- Required as the target key for the composite bot/owner foreign key below.
+alter table public.bots add constraint bots_id_owner_id_key unique (id, owner_id);
+
 create table if not exists public.bot_secrets (
   bot_id uuid primary key references public.bots(id) on delete cascade,
   telegram_token_ciphertext text not null,
