@@ -18,10 +18,19 @@ export default function DashboardPage() {
   const router = useRouter();
   const [bots, setBots] = useState<Bot[]>([]);
   const [name, setName] = useState("");
+  const [tokens, setTokens] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [uploadingBot, setUploadingBot] = useState<string | null>(null);
+  const [workingBot, setWorkingBot] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+
+  async function getAccessToken() {
+    const supabase = getSupabaseBrowserClient();
+    const { data: { session }, error } = await supabase.auth.getSession();
+    if (error || !session?.access_token) throw new Error("Please sign in again.");
+    return session.access_token;
+  }
 
   async function loadBots() {
     const supabase = getSupabaseBrowserClient();
@@ -62,7 +71,7 @@ export default function DashboardPage() {
       if (error) throw error;
       setName("");
       await loadBots();
-      setMessage("Bot project created. Upload a ZIP containing your Python bot files.");
+      setMessage("Bot project created.");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Could not create bot.");
     } finally {
@@ -74,17 +83,12 @@ export default function DashboardPage() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-
     if (!file.name.toLowerCase().endsWith(".zip")) {
       setMessage("Please choose a .zip archive.");
       return;
     }
-    if (file.size > MAX_ARCHIVE_BYTES) {
-      setMessage("The ZIP archive must be 20 MB or smaller.");
-      return;
-    }
-    if (file.size === 0) {
-      setMessage("The selected archive is empty.");
+    if (file.size === 0 || file.size > MAX_ARCHIVE_BYTES) {
+      setMessage("Choose a non-empty ZIP archive no larger than 20 MB.");
       return;
     }
 
@@ -94,21 +98,62 @@ export default function DashboardPage() {
       const supabase = getSupabaseBrowserClient();
       const { data: { user }, error: userError } = await supabase.auth.getUser();
       if (userError || !user) throw new Error("Please sign in again.");
-
       const objectPath = user.id + "/" + bot.id + "/source.zip";
-      const { error } = await supabase.storage
-        .from("bot-source")
-        .upload(objectPath, file, {
-          upsert: true,
-          contentType: "application/zip",
-          cacheControl: "0"
-        });
+      const { error } = await supabase.storage.from("bot-source").upload(objectPath, file, {
+        upsert: true, contentType: "application/zip", cacheControl: "0"
+      });
       if (error) throw error;
-      setMessage("Source archive uploaded privately. It has not been executed; deployment will be available after runner setup.");
+      setMessage("Private source archive uploaded. It has not been executed.");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Upload failed.");
     } finally {
       setUploadingBot(null);
+    }
+  }
+
+  async function saveToken(bot: Bot) {
+    const token = tokens[bot.id]?.trim() ?? "";
+    if (!token) {
+      setMessage("Enter the Telegram bot token first.");
+      return;
+    }
+    setWorkingBot(bot.id);
+    setMessage("");
+    try {
+      const accessToken = await getAccessToken();
+      const response = await fetch("/api/bots/" + bot.id + "/secret", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+        body: JSON.stringify({ token })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not save token.");
+      setTokens(current => ({ ...current, [bot.id]: "" }));
+      setMessage("Telegram token encrypted and saved. It will not be shown again.");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not save token.");
+    } finally {
+      setWorkingBot(null);
+    }
+  }
+
+  async function requestAction(bot: Bot, action: "deploy" | "start" | "stop" | "restart") {
+    setWorkingBot(bot.id);
+    setMessage("");
+    try {
+      const accessToken = await getAccessToken();
+      const response = await fetch("/api/bots/" + bot.id + "/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken },
+        body: JSON.stringify({ action })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not queue action.");
+      setMessage(action + " request queued (" + result.job.id + "). Runner execution is not enabled yet.");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not queue action.");
+    } finally {
+      setWorkingBot(null);
     }
   }
 
@@ -127,7 +172,7 @@ export default function DashboardPage() {
       <section className="hero">
         <div className="eyebrow">Workspace</div>
         <h1>Your bot projects</h1>
-        <p>Create and organize your Telegram bot projects. Each account sees only its own records through database row-level security.</p>
+        <p>Create projects, upload private source archives, and configure Telegram credentials. Every operation is checked against your account.</p>
       </section>
       <div className="grid">
         <section className="panel">
@@ -138,19 +183,31 @@ export default function DashboardPage() {
           {loading ? <p>Loading your projects…</p> : bots.length === 0 ? <p>No bots yet. Create your first project using the form.</p> : (
             <div className="bot-list">
               {bots.map(bot => (
-                <article className="bot" key={bot.id}>
+                <article className="bot" key={bot.id} style={{ alignItems: "flex-start" }}>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div className="bot-name">{bot.name}</div>
                     <div className="muted">{bot.entrypoint}</div>
                     <label className="field" style={{ marginTop: 12 }}>
-                      <span>Upload Python source (.zip, max 20 MB)</span>
+                      <span>Python source (.zip, max 20 MB)</span>
+                      <input type="file" accept=".zip,application/zip" disabled={uploadingBot !== null} onChange={event => uploadSource(bot, event)} />
+                    </label>
+                    <label className="field" style={{ marginTop: 12 }}>
+                      <span>Telegram bot token</span>
                       <input
-                        type="file"
-                        accept=".zip,application/zip"
-                        disabled={uploadingBot !== null}
-                        onChange={event => uploadSource(bot, event)}
+                        type="password"
+                        autoComplete="new-password"
+                        value={tokens[bot.id] ?? ""}
+                        onChange={event => setTokens(current => ({ ...current, [bot.id]: event.target.value }))}
+                        placeholder="Paste token from BotFather"
                       />
                     </label>
+                    <div className="row" style={{ justifyContent: "flex-start", flexWrap: "wrap", marginTop: 10 }}>
+                      <button className="btn btn-secondary" disabled={workingBot !== null || !(tokens[bot.id] ?? "").trim()} onClick={() => saveToken(bot)}>Save token</button>
+                      <button className="btn btn-secondary" disabled={workingBot !== null} onClick={() => requestAction(bot, "deploy")}>Deploy</button>
+                      <button className="btn btn-secondary" disabled={workingBot !== null} onClick={() => requestAction(bot, "start")}>Start</button>
+                      <button className="btn btn-secondary" disabled={workingBot !== null} onClick={() => requestAction(bot, "stop")}>Stop</button>
+                      <button className="btn btn-secondary" disabled={workingBot !== null} onClick={() => requestAction(bot, "restart")}>Restart</button>
+                    </div>
                   </div>
                   <span className={`status status-${bot.status}`}><span className="dot" />{bot.status}</span>
                 </article>
@@ -167,10 +224,10 @@ export default function DashboardPage() {
             </label>
             <button className="btn" disabled={busy || !name.trim()} type="submit">{busy ? "Creating…" : "Create project"}</button>
           </form>
-          <p className="muted">Each project gets a private source archive location. The runner will validate and deploy archives in an isolated environment.</p>
+          <p className="muted">Each project has private source storage and separately encrypted token storage.</p>
         </section>
       </div>
-      <p className="notice" style={{ marginTop: 18 }}>Uploads are private and limited to 20 MB. Do not include secrets such as Telegram bot tokens in your ZIP; configure them separately when secret management is available. Uploaded code is not run by the website.</p>
+      <p className="notice" style={{ marginTop: 18 }}>Important: action requests are recorded in the database queue, but no bot process is launched yet. Do not rely on the status display as proof of execution. Never put tokens in ZIP files or source control.</p>
       {message && <p className="muted" role="status">{message}</p>}
     </main>
   );
