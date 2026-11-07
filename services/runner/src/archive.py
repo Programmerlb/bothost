@@ -34,6 +34,7 @@ def validate_archive(path: str) -> list[zipfile.ZipInfo]:
                 not normalized
                 or normalized.startswith("/")
                 or pure.is_absolute()
+                or not pure.parts
                 or any(part in ("", ".", "..") for part in pure.parts)
                 or ":" in pure.parts[0]
             ):
