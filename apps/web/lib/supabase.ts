@@ -1,0 +1,17 @@
+"use client";
+
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+
+let client: SupabaseClient | null = null;
+
+export function getSupabaseBrowserClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !anonKey) {
+    throw new Error("Supabase is not configured. Add the public URL and anon key to your environment.");
+  }
+
+  if (!client) client = createClient(url, anonKey);
+  return client;
+}
