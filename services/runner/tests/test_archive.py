@@ -27,3 +27,12 @@ def test_requires_main_py(tmp_path):
         archive.writestr("bot.py", "pass")
     with pytest.raises(ArchiveRejected, match="main_py_missing"):
         validate_archive(str(archive_path))
+
+
+def test_rejects_empty_filename(tmp_path):
+    archive_path = tmp_path / "empty-name.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("", "bad")
+        archive.writestr("main.py", "pass")
+    with pytest.raises(ArchiveRejected):
+        validate_archive(str(archive_path))
